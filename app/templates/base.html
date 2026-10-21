@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DW Clinica Stomatologica</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root {
+      --brand: #2d4a6e;
+      --brand-light: #3d5f8a;
+      --sidebar-w: 230px;
+    }
+
+    body { background: #f5f6f8; font-size: 0.92rem; }
+
+    /* Bara de sus (mobil) */
+    .topbar {
+      display: none;
+      background: var(--brand);
+      color: #fff;
+      padding: 10px 14px;
+      align-items: center;
+      gap: 10px;
+      position: sticky;
+      top: 0;
+      z-index: 1040;
+    }
+    .topbar .hamburger {
+      background: none; border: none;
+      color: #fff; font-size: 1.4rem;
+      cursor: pointer; padding: 0; line-height: 1;
+    }
+    .topbar .brand-name { font-weight: 600; font-size: 1rem; }
+
+    /* Fundal meniu */
+    .sidebar-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 1045;
+    }
+    .sidebar-overlay.active { display: block; }
+
+    /* Meniu lateral */
+    .sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      min-height: 100vh;
+      background: var(--brand);
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .sidebar .brand {
+      padding: 18px 16px 14px;
+      border-bottom: 1px solid var(--brand-light);
+    }
+    .sidebar .brand-title { font-weight: 700; font-size: 1rem; }
+    .sidebar .brand-sub { font-size: 0.75rem; color: #9bb3cc; margin-top: 2px; }
+
+    .sidebar .section-label {
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      color: #7fa0bf;
+      text-transform: uppercase;
+      padding: 10px 16px 4px;
+      font-weight: 600;
+    }
+    .sidebar .nav-link {
+      color: #c5d8ea;
+      padding: 7px 16px;
+      border-radius: 5px;
+      margin: 1px 8px;
+      font-size: 0.87rem;
+    }
+    .sidebar .nav-link i { margin-right: 6px; }
+    .sidebar .nav-link:hover { background: var(--brand-light); color: #fff; }
+    .sidebar .nav-link.active { background: var(--brand-light); color: #fff; font-weight: 600; }
+
+    .sidebar-close {
+      background: none; border: none;
+      color: #9bb3cc; font-size: 1.1rem;
+      cursor: pointer; padding: 0; line-height: 1;
+    }
+    .sidebar-close:hover { color: #fff; }
+
+    /* Continut */
+    .main-content { padding: 28px; min-width: 0; }
+
+    /* Carduri */
+    .card {
+      border: 1px solid #e2e6ea;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      border-radius: 8px;
+    }
+    .card-header {
+      border-radius: 7px 7px 0 0 !important;
+      font-weight: 600;
+      font-size: 0.88rem;
+      background: #f0f3f7 !important;
+      color: #2d4a6e !important;
+      border-bottom: 1px solid #e2e6ea;
+      padding: 10px 16px;
+    }
+    .card-header i { margin-right: 6px; }
+
+    /* Carduri statistici */
+    .stat-card { text-align: center; padding: 20px; }
+    .stat-card .stat-num { font-size: 2.2rem; font-weight: 700; color: var(--brand); }
+    .stat-card .stat-label { font-size: 0.82rem; color: #6c757d; margin-top: 4px; }
+    .stat-card .stat-icon { font-size: 1.6rem; color: #9bb3cc; margin-bottom: 6px; }
+
+    /* Tabele */
+    .table th { background: var(--brand); color: #fff; font-size: 0.82rem; font-weight: 600; }
+    .table td { font-size: 0.87rem; vertical-align: middle; }
+    .table-hover tbody tr:hover { background: #f0f4f8; }
+
+    /* Butoane */
+    .btn-primary { background: var(--brand); border-color: var(--brand); }
+    .btn-primary:hover { background: var(--brand-light); border-color: var(--brand-light); }
+    .btn-outline-primary { color: var(--brand); border-color: var(--brand); }
+    .btn-outline-primary:hover { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+    /* Etichete */
+    .badge-vip      { background: #e8d44d; color: #333; }
+    .badge-premium  { background: #9e9e9e; color: #fff; }
+    .badge-standard { background: #8d6e63; color: #fff; }
+    .badge-basic    { background: #bdbdbd; color: #333; }
+
+    /* Responsive */
+    @media (max-width: 991.98px) {
+      .topbar { display: flex; }
+      .sidebar {
+        position: fixed; top: 0; left: 0;
+        height: 100%; z-index: 1050;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        min-height: unset;
+      }
+      .sidebar.open { transform: translateX(0); }
+      .main-content { padding: 14px; }
+    }
+    @media (max-width: 575.98px) {
+      .stat-card .stat-num { font-size: 1.8rem; }
+      .main-content { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Bara de sus (doar mobil) -->
+<div class="topbar d-lg-none" id="topbar">
+  <button class="hamburger" onclick="toggleSidebar()" id="hamburgerBtn" aria-label="Meniu" aria-expanded="false">
+    <i class="bi bi-list"></i>
+  </button>
+  <span class="brand-name"><i class="bi bi-tooth-fill me-1"></i> StomaDW</span>
+</div>
+
+<!-- Fundal meniu -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+<div class="d-flex">
+  <!-- Meniu lateral -->
+  <div class="sidebar" id="sidebar">
+    <div class="brand d-flex align-items-start justify-content-between">
+      <div>
+        <div><i class="bi bi-tooth-fill"></i> <span class="brand-title">StomaDW</span></div>
+        <div class="brand-sub">Administrare Data Warehouse</div>
+      </div>
+      <button class="sidebar-close d-lg-none mt-1" onclick="toggleSidebar()" aria-label="Inchide">
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>
+
+    <nav class="nav flex-column pt-2">
+      <div class="section-label">Modul 1 · OLTP CRUD</div>
+      <a href="/oltp/pacienti"
+         class="nav-link {% if request.path.startswith('/oltp/pacienti') %}active{% endif %}"
+         onclick="closeSidebarOnMobile()">
+        <i class="bi bi-people"></i> Pacienti
+      </a>
+      <a href="/oltp/programari"
+         class="nav-link {% if request.path.startswith('/oltp/programari') %}active{% endif %}"
+         onclick="closeSidebarOnMobile()">
+        <i class="bi bi-calendar-check"></i> Programari
+      </a>
+
+      <div class="section-label mt-2">Modul 2 · ETL</div>
+      <a href="/etl"
+         class="nav-link {% if request.path.startswith('/etl') %}active{% endif %}"
+         onclick="closeSidebarOnMobile()">
+        <i class="bi bi-arrow-left-right"></i> Propagare OLTP → DW
+      </a>
+
+      <div class="section-label mt-2">Modul 3 · Rapoarte</div>
+      <a href="/rapoarte"
+         class="nav-link {% if request.path.startswith('/rapoarte') %}active{% endif %}"
+         onclick="closeSidebarOnMobile()">
+        <i class="bi bi-bar-chart-line"></i> Rapoarte Grafice
+      </a>
+    </nav>
+  </div>
+
+  <!-- Continut -->
+  <div class="flex-grow-1 main-content" style="min-width:0;">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for cat, msg in messages %}
+          <div class="alert alert-{{ cat }} alert-dismissible fade show mb-3">
+            {{ msg }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    const btn     = document.getElementById('hamburgerBtn');
+    const isOpen  = sidebar.classList.toggle('open');
+    overlay.classList.toggle('active', isOpen);
+    document.body.style.overflow = isOpen ? 'hidden' : '';
+    btn.setAttribute('aria-expanded', isOpen);
+  }
+  function closeSidebarOnMobile() {
+    if (window.innerWidth < 992) toggleSidebar();
+  }
+  window.addEventListener('resize', () => {
+    if (window.innerWidth >= 992) {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('sidebarOverlay').classList.remove('active');
+      document.body.style.overflow = '';
+    }
+  });
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

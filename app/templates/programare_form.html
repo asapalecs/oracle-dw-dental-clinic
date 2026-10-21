@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-4">
+  <h2><i class="bi bi-calendar-plus"></i> Programare Noua</h2>
+  <a href="/oltp/programari" class="text-muted small"><i class="bi bi-arrow-left"></i> Inapoi</a>
+</div>
+<div class="card" style="max-width:700px">
+  <div class="card-body">
+    <form method="POST">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label fw-semibold">Pacient *</label>
+          <select name="id_pacient" class="form-select" required>
+            <option value="">-- Selecteaza --</option>
+            {% for p in pacienti %}
+            <option value="{{ p.id_pacient }}">{{ p.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label fw-semibold">Medic *</label>
+          <select name="id_medic" class="form-select" required>
+            <option value="">-- Selecteaza --</option>
+            {% for m in medici %}
+            <option value="{{ m.id_medic }}">{{ m.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-semibold">Cabinet *</label>
+          <select name="id_cabinet" class="form-select" required>
+            {% for c in cabinete %}
+            <option value="{{ c.id_cabinet }}">{{ c.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-semibold">Data *</label>
+          <input type="date" name="data_prog" class="form-control" required>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-semibold">Ora start *</label>
+          <input type="time" name="ora_start" class="form-control" value="09:00" required>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-semibold">Ora sfarsit</label>
+          <input type="time" name="ora_sfarsit" class="form-control" value="10:00">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Status</label>
+          <select name="status" class="form-select">
+            <option value="Programata">Programata</option>
+            <option value="Confirmata">Confirmata</option>
+            <option value="Finalizata">Finalizata</option>
+            <option value="Anulata">Anulata</option>
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-semibold">Observatii</label>
+          <textarea name="observatii" class="form-control" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="mt-4">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Salveaza</button>
+        <a href="/oltp/programari" class="btn btn-outline-secondary ms-2">Anuleaza</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

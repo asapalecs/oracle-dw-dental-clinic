@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-4">
+  <h5 class="fw-bold text-dark mb-0"><i class="bi bi-bar-chart-line me-2"></i>Rapoarte Grafice Dinamice DW</h5>
+  <p class="text-muted small mb-0">Rapoarte analitice din Data Warehouse · Clinica Stomatologica</p>
+</div>
+
+<!-- Filtre -->
+<div class="card mb-4">
+  <div class="card-body d-flex gap-3 align-items-end flex-wrap">
+    <div>
+      <label class="form-label fw-semibold small">An analiza</label>
+      <select id="selAn" class="form-select form-select-sm" style="width:110px" onchange="loadAll()">
+        <option value="2024">2024</option>
+        <option value="2025">2025</option>
+      </select>
+    </div>
+    <button class="btn btn-sm btn-primary" onclick="loadAll()">
+      <i class="bi bi-arrow-clockwise"></i> Actualizeaza
+    </button>
+    <span id="loadingMsg" class="text-muted small" style="display:none">
+      <span class="spinner-border spinner-border-sm"></span> Se incarca...
+    </span>
+  </div>
+</div>
+
+<!-- Raport 1 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-bar-chart"></i> Raport 1: Venituri Lunare pe Categorii de Servicii
+    <span class="badge bg-secondary ms-2 fw-normal" style="font-size:0.7rem">GROUP BY ROLLUP</span>
+  </div>
+  <div class="card-body">
+    <canvas id="chart1" height="120"></canvas>
+  </div>
+</div>
+
+<!-- Raport 2 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-person-badge"></i> Raport 2: Performanta Medicilor
+    <span class="badge bg-secondary ms-2 fw-normal" style="font-size:0.7rem">RANK() analytic</span>
+  </div>
+  <div class="card-body">
+    <canvas id="chart2" height="100"></canvas>
+  </div>
+</div>
+
+<!-- Raport 3 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-graph-up"></i> Raport 3: Evolutia Lunara a Veniturilor
+    <span class="badge bg-secondary ms-2 fw-normal" style="font-size:0.7rem">SUM OVER + LAG()</span>
+  </div>
+  <div class="card-body row">
+    <div class="col-md-8"><canvas id="chart3a" height="140"></canvas></div>
+    <div class="col-md-4"><canvas id="chart3b" height="140"></canvas></div>
+  </div>
+</div>
+
+<!-- Raport 4 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-people"></i> Raport 4: Segmentare Pacienti
+    <span class="badge bg-secondary ms-2 fw-normal" style="font-size:0.7rem">NTILE(4) analytic</span>
+  </div>
+  <div class="card-body row">
+    <div class="col-md-4"><canvas id="chart4pie" height="180"></canvas></div>
+    <div class="col-md-8" id="tabel4"></div>
+  </div>
+</div>
+
+<!-- Raport 5 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-building"></i> Raport 5: Utilizare si Rentabilitate Cabinete
+    <span class="badge bg-secondary ms-2 fw-normal" style="font-size:0.7rem">GROUP BY CUBE</span>
+  </div>
+  <div class="card-body">
+    <canvas id="chart5" height="110"></canvas>
+  </div>
+</div>
+
+<!-- Raport 6 -->
+<div class="card mb-4">
+  <div class="card-header">
+    <i class="bi bi-trophy"></i> Raport 6: Top 3 Servicii per Categorie
+    <span class="badge bg-secondary ms-2 fw-normal" style="font-size:0.7rem">DENSE_RANK() OVER PARTITION BY</span>
+  </div>
+  <div class="card-body" id="tabel6"></div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const CULORI = ['#2196F3','#4CAF50','#FF9800','#9C27B0','#F44336','#00BCD4','#8BC34A','#FF5722'];
+let charts = {};
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+async function loadAll() {
+  const an = document.getElementById('selAn').value;
+  document.getElementById('loadingMsg').style.display = 'inline';
+  await Promise.all([r1(an), r2(an), r3(an), r4(), r5(), r6()]);
+  document.getElementById('loadingMsg').style.display = 'none';
+}
+
+// RAPORT 1
+async function r1(an) {
+  const data = await fetch('/api/raport1?an='+an).then(r=>r.json());
+  const luni = [...new Set(data.map(d=>d.luna_nume))];
+  const cats = [...new Set(data.map(d=>d.categorie))];
+  const datasets = cats.map((cat,i)=>({
+    label: cat, backgroundColor: CULORI[i%CULORI.length],
+    data: luni.map(l=>{
+      const row = data.find(d=>d.luna_nume===l&&d.categorie===cat);
+      return row ? parseFloat(row.venit_total) : 0;
+    })
+  }));
+  destroyChart('chart1');
+  charts['chart1'] = new Chart(document.getElementById('chart1'), {
+    type:'bar',
+    data:{labels:luni, datasets},
+    options:{plugins:{legend:{position:'bottom'}},
+             scales:{x:{stacked:true},y:{stacked:true, title:{display:true,text:'RON'}}}}
+  });
+}
+
+// RAPORT 2
+async function r2(an) {
+  const data = await fetch('/api/raport2?an='+an).then(r=>r.json());
+  destroyChart('chart2');
+  charts['chart2'] = new Chart(document.getElementById('chart2'), {
+    type:'bar',
+    data:{
+      labels: data.map(d=>d.medic),
+      datasets:[
+        {label:'Venit Total (RON)', data: data.map(d=>parseFloat(d.venit_total)), backgroundColor:'#2196F3'},
+        {label:'Nr Programari', data: data.map(d=>parseInt(d.nr_programari)), backgroundColor:'#4CAF50', yAxisID:'y2'}
+      ]
+    },
+    options:{
+      indexAxis:'y',
+      plugins:{legend:{position:'bottom'}},
+      scales:{
+        y:{title:{display:true,text:'Medic'}},
+        y2:{position:'right',grid:{drawOnChartArea:false},title:{display:true,text:'Nr Programari'}}
+      }
+    }
+  });
+}
+
+// RAPORT 3
+async function r3(an) {
+  const data = await fetch('/api/raport3?an='+an).then(r=>r.json());
+  destroyChart('chart3a'); destroyChart('chart3b');
+  charts['chart3a'] = new Chart(document.getElementById('chart3a'), {
+    type:'line',
+    data:{
+      labels: data.map(d=>d.luna_nume),
+      datasets:[
+        {label:'Venit Luna (RON)', data:data.map(d=>parseFloat(d.venit_luna)), borderColor:'#2196F3', backgroundColor:'rgba(33,150,243,0.1)', fill:true, tension:0.4},
+        {label:'Servicii', data:data.map(d=>parseInt(d.nr_servicii)), borderColor:'#FF9800', borderDash:[5,5], yAxisID:'y2'}
+      ]
+    },
+    options:{
+      plugins:{legend:{position:'bottom'}},
+      scales:{y:{title:{display:true,text:'RON'}}, y2:{position:'right',grid:{drawOnChartArea:false}}}
+    }
+  });
+  charts['chart3b'] = new Chart(document.getElementById('chart3b'), {
+    type:'bar',
+    data:{
+      labels:data.map(d=>d.luna_nume),
+      datasets:[{
+        label:'Variatie %',
+        data:data.map(d=>parseFloat(d.variatie_pct||0)),
+        backgroundColor:data.map(d=>parseFloat(d.variatie_pct||0)>=0?'rgba(76,175,80,0.7)':'rgba(244,67,54,0.7)')
+      }]
+    },
+    options:{plugins:{legend:{position:'bottom'}},scales:{y:{title:{display:true,text:'%'}}}}
+  });
+}
+
+// RAPORT 4
+async function r4() {
+  const data = await fetch('/api/raport4').then(r=>r.json());
+  const segCounts = {VIP:0,Premium:0,Standard:0,Basic:0};
+  data.forEach(d=>{ if(segCounts[d.segment]!==undefined) segCounts[d.segment]++; });
+  destroyChart('chart4pie');
+  charts['chart4pie'] = new Chart(document.getElementById('chart4pie'), {
+    type:'doughnut',
+    data:{
+      labels:Object.keys(segCounts),
+      datasets:[{data:Object.values(segCounts),backgroundColor:['#FFD700','#C0C0C0','#CD7F32','#6c757d']}]
+    },
+    options:{plugins:{legend:{position:'bottom'}}}
+  });
+  const div = document.getElementById('tabel4');
+  let html = '<table class="table table-sm table-hover"><thead><tr><th>Pacient</th><th>Oras</th><th>Varsta</th><th>Vizite</th><th>Cheltuieli</th><th>Segment</th></tr></thead><tbody>';
+  data.forEach(d=>{
+    const badge = {VIP:'badge-vip',Premium:'badge-premium',Standard:'badge-standard',Basic:'badge-basic'}[d.segment]||'bg-secondary';
+    html += `<tr><td>${d.pacient}</td><td>${d.oras||'-'}</td><td>${d.grupa_varsta||'-'}</td><td>${d.nr_vizite}</td>
+      <td>${parseFloat(d.cheltuieli_totale).toFixed(2)} RON</td>
+      <td><span class="badge ${badge}">${d.segment}</span></td></tr>`;
+  });
+  html += '</tbody></table>';
+  div.innerHTML = html;
+}
+
+// RAPORT 5
+async function r5() {
+  const data = await fetch('/api/raport5').then(r=>r.json()).then(r=>r.filter(d=>d.an));
+  const cabinete = [...new Set(data.map(d=>d.cabinet))];
+  const ani = [...new Set(data.map(d=>String(d.an)))].sort();
+  const datasets = ani.map((an,i)=>({
+    label:'An '+an, backgroundColor:CULORI[i],
+    data: cabinete.map(c=>{
+      const row=data.find(d=>d.cabinet===c&&String(d.an)===an);
+      return row?parseFloat(row.venit_total):0;
+    })
+  }));
+  destroyChart('chart5');
+  charts['chart5'] = new Chart(document.getElementById('chart5'), {
+    type:'bar',
+    data:{labels:cabinete, datasets},
+    options:{plugins:{legend:{position:'bottom'}},
+             scales:{x:{stacked:true},y:{stacked:true,title:{display:true,text:'RON'}}}}
+  });
+}
+
+// RAPORT 6
+async function r6() {
+  const data = await fetch('/api/raport6').then(r=>r.json());
+  const cats = [...new Set(data.map(d=>d.categorie))];
+  const rankColors = ['#FFD700','#C0C0C0','#CD7F32'];
+  let html = '<div class="row">';
+  cats.forEach(cat=>{
+    const rows = data.filter(d=>d.categorie===cat);
+    html += `<div class="col-md-4 mb-3"><h6 class="text-uppercase fw-bold" style="font-size:0.75rem;letter-spacing:1px;">${cat}</h6>`;
+    rows.forEach(r=>{
+      html += `<div class="d-flex align-items-center mb-2">
+        <span class="badge me-2" style="background:${rankColors[r.rank_in_cat-1]||'#6c757d'};color:#333;min-width:28px;">#${r.rank_in_cat}</span>
+        <div><div class="small fw-semibold">${r.denumire}</div>
+        <div class="text-muted" style="font-size:0.75rem">${parseFloat(r.venit_total).toFixed(2)} RON | ${r.nr_efectuat} efectuari</div></div>
+      </div>`;
+    });
+    html += '</div>';
+  });
+  html += '</div>';
+  document.getElementById('tabel6').innerHTML = html;
+}
+
+// Incarca automat la deschidere
+window.onload = loadAll;
+</script>
+{% endblock %}

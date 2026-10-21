@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-4">
+  <h2><i class="bi bi-arrow-left-right"></i> Propagare OLTP → DW (ETL)</h2>
+  <p class="text-muted">Vizualizeaza starea sincronizarii si propaga modificarile noi din OLTP in Data Warehouse.</p>
+</div>
+
+{% if stats.get('eroare') %}
+<div class="alert alert-danger"><strong>Eroare conexiune:</strong> {{ stats.eroare }}</div>
+{% endif %}
+
+<!-- Statistici -->
+<div class="row g-4 mb-4">
+  <div class="col-md-3">
+    <div class="card stat-card border-start border-primary border-4">
+      <i class="bi bi-database text-primary" style="font-size:1.5rem"></i>
+      <div class="stat-num text-primary">{{ stats.get('oltp_prog_finalizate', '?') }}</div>
+      <div class="text-muted small">Programari finalizate OLTP</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card stat-card border-start border-info border-4">
+      <i class="bi bi-list-check text-info" style="font-size:1.5rem"></i>
+      <div class="stat-num text-info">{{ stats.get('oltp_servicii_efectuate', '?') }}</div>
+      <div class="text-muted small">Servicii in OLTP (sursa)</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card stat-card border-start border-success border-4">
+      <i class="bi bi-hdd-stack text-success" style="font-size:1.5rem"></i>
+      <div class="stat-num text-success">{{ stats.get('dw_fapte', '?') }}</div>
+      <div class="text-muted small">Fapte in Data Warehouse</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card stat-card border-start border-{% if stats.get('diferenta',0) > 0 %}warning{% else %}success{% endif %} border-4">
+      <i class="bi bi-exclamation-triangle text-{% if stats.get('diferenta',0) > 0 %}warning{% else %}success{% endif %}" style="font-size:1.5rem"></i>
+      <div class="stat-num text-{% if stats.get('diferenta',0) > 0 %}warning{% else %}success{% endif %}">
+        {{ stats.get('diferenta', 0) }}
+      </div>
+      <div class="text-muted small">Fapte nesincronizate</div>
+    </div>
+  </div>
+</div>
+
+<!-- Stare sincronizare -->
+<div class="card mb-4">
+  <div class="card-header bg-dark text-white">
+    <i class="bi bi-info-circle"></i> Starea curenta a sincronizarii
+  </div>
+  <div class="card-body">
+    <table class="table table-bordered mb-0">
+      <tr>
+        <th style="width:40%">Indicator</th>
+        <th>OLTP (Sursa)</th>
+        <th>DW (Destinatie)</th>
+        <th>Status</th>
+      </tr>
+      <tr>
+        <td>Pacienti</td>
+        <td>{{ stats.get('oltp_pacienti', '?') }}</td>
+        <td>{{ stats.get('dw_pacienti', '?') }}</td>
+        <td><span class="badge bg-success">Sincronizat</span></td>
+      </tr>
+      <tr>
+        <td>Servicii efectuate (fapte)</td>
+        <td>{{ stats.get('oltp_servicii_efectuate', '?') }}</td>
+        <td>{{ stats.get('dw_fapte', '?') }}</td>
+        <td>
+          {% if stats.get('diferenta',0) > 0 %}
+            <span class="badge bg-warning text-dark">{{ stats.diferenta }} nesincronizate</span>
+          {% else %}
+            <span class="badge bg-success">Sincronizat</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Ultima data incarcare DW</td>
+        <td colspan="2">{{ stats.get('dw_ultima_data', 'N/A') }}</td>
+        <td>-</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<!-- Buton ETL -->
+<div class="card">
+  <div class="card-header bg-success text-white">
+    <i class="bi bi-play-circle"></i> Executare ETL Incremental
+  </div>
+  <div class="card-body">
+    <p>Propaga <strong>faptele noi</strong> din OLTP in Data Warehouse (doar datele mai noi decat ultima data din DW).</p>
+    <button id="btnEtl" class="btn btn-success btn-lg" onclick="runETL()">
+      <i class="bi bi-play-fill"></i> Ruleaza ETL acum
+    </button>
+    <div id="etlResult" class="mt-3"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function runETL() {
+  const btn = document.getElementById('btnEtl');
+  const res = document.getElementById('etlResult');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Se executa ETL...';
+  res.innerHTML = '';
+  fetch('/etl/run', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        res.innerHTML = `<div class="alert alert-success">
+          <strong><i class="bi bi-check-circle"></i> ETL finalizat cu succes!</strong><br>
+          ${data.mesaj}
+        </div>`;
+        setTimeout(() => location.reload(), 2000);
+      } else {
+        res.innerHTML = `<div class="alert alert-danger">
+          <strong>Eroare ETL:</strong> ${data.eroare}
+        </div>`;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Ruleaza ETL acum';
+      }
+    })
+    .catch(e => {
+      res.innerHTML = `<div class="alert alert-danger">Eroare retea: ${e}</div>`;
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-play-fill"></i> Ruleaza ETL acum';
+    });
+}
+</script>
+{% endblock %}

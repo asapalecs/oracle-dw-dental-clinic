@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-4">
+  <h2><i class="bi bi-person-plus"></i> {{ action }} Pacient</h2>
+  <a href="/oltp/pacienti" class="text-muted small"><i class="bi bi-arrow-left"></i> Inapoi la lista</a>
+</div>
+<div class="card" style="max-width:700px">
+  <div class="card-body">
+    <form method="POST">
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Nume *</label>
+          <input type="text" name="nume" class="form-control" value="{{ pacient.nume if pacient else '' }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Prenume *</label>
+          <input type="text" name="prenume" class="form-control" value="{{ pacient.prenume if pacient else '' }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">CNP</label>
+          <input type="text" name="cnp" class="form-control" maxlength="13" value="{{ pacient.cnp if pacient else '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Data nasterii</label>
+          <input type="date" name="data_nasterii" class="form-control" value="{{ pacient.data_nasterii if pacient else '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Telefon</label>
+          <input type="text" name="telefon" class="form-control" value="{{ pacient.telefon if pacient else '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Email</label>
+          <input type="email" name="email" class="form-control" value="{{ pacient.email if pacient else '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-semibold">Adresa</label>
+          <input type="text" name="adresa" class="form-control" value="{{ pacient.adresa if pacient else '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Oras</label>
+          <input type="text" name="oras" class="form-control" value="{{ pacient.oras if pacient else 'Bucuresti' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Judet</label>
+          <input type="text" name="judet" class="form-control" value="{{ pacient.judet if pacient else 'Ilfov' }}">
+        </div>
+      </div>
+      <div class="mt-4">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> {{ action }}</button>
+        <a href="/oltp/pacienti" class="btn btn-outline-secondary ms-2">Anuleaza</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

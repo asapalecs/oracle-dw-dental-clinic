@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+  <div>
+    <h2><i class="bi bi-calendar-check"></i> Programari OLTP</h2>
+    <p class="text-muted mb-0">Vizualizare si gestionare programari</p>
+  </div>
+  <a href="/oltp/programari/noua" class="btn btn-primary"><i class="bi bi-plus-lg"></i> Programare Noua</a>
+</div>
+<div class="card">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+    <table class="table table-hover mb-0 small">
+      <thead>
+        <tr>
+          <th>#</th><th>Pacient</th><th>Medic</th><th>Specializare</th>
+          <th>Cabinet</th><th>Data</th><th>Ora</th><th>Status</th>
+          <th>Total Factura</th><th>Plata</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in programari %}
+        <tr>
+          <td>{{ p.id_programare }}</td>
+          <td><strong>{{ p.pacient }}</strong></td>
+          <td>{{ p.medic }}</td>
+          <td><span class="badge bg-info text-dark">{{ p.specializare }}</span></td>
+          <td>{{ p.cabinet }}</td>
+          <td>{{ p.data_prog }}</td>
+          <td>{{ p.ora_start }}</td>
+          <td>
+            {% set color = {'Finalizata':'success','Programata':'primary','Confirmata':'info','Anulata':'danger','Neprezentata':'warning'}[p.status] or 'secondary' %}
+            <span class="badge bg-{{ color }}">{{ p.status }}</span>
+          </td>
+          <td>{{ '%.2f RON'|format(p.total_factura|float) }}</td>
+          <td>
+            {% if p.status_plata == 'Achitata' %}
+              <span class="badge bg-success">{{ p.status_plata }}</span>
+            {% elif p.status_plata == 'Partiala' %}
+              <span class="badge bg-warning text-dark">{{ p.status_plata }}</span>
+            {% else %}
+              <span class="badge bg-secondary">{{ p.status_plata }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="text-center text-muted py-4">Nicio programare</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""Creeaza schema OLTP si datele de test. Se ruleaza inainte de setup_dw.py.
+
+Pornire: python etl/setup_oltp.py
+"""
+import os
+import sys
+import time
+
+import oracledb
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from config import DB_HOST as HOST  # noqa: E402
+from config import DB_PORT as PORT  # noqa: E402
+from config import DB_SERVICE as SERVICE  # noqa: E402
+from config import DW_PASSWORD, DW_USER, OLTP_PASSWORD, OLTP_USER  # noqa: E402
+from config import SYS_PASSWORD as SYS_PWD  # noqa: E402
+from config import connect_oltp, connect_sys, dsn  # noqa: E402
+
+
+def wait_for_oracle(max_wait=180):
+    """Asteapta pana cand baza de date accepta conexiuni."""
+    print("Astept pornirea Oracle...", end="", flush=True)
+    start = time.time()
+    while time.time() - start < max_wait:
+        try:
+            conn = oracledb.connect(user="system", password=SYS_PWD, dsn=dsn())
+            conn.close()
+            print(" gata.")
+            return True
+        except Exception:
+            print(".", end="", flush=True)
+            time.sleep(5)
+    print(" TIMEOUT expirat")
+    return False
+
+
+def run_as_sys(statements):
+    """Ruleaza DDL ca SYSDBA. Orice eroare opreste scriptul, cu exceptia
+    ORA-01920 / ORA-00955 (obiectul exista deja)."""
+    conn = connect_sys()
+    cur = conn.cursor()
+
+    # In CDB$ROOT, CREATE USER fara prefix C## esueaza (ORA-65096)
+    cur.execute("SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual")
+    container = cur.fetchone()[0]
+    if container.upper() != SERVICE.upper():
+        print(f"  Sesiunea e in containerul '{container}', comut pe {SERVICE}")
+        cur.execute(f"ALTER SESSION SET CONTAINER = {SERVICE}")
+        cur.execute("SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual")
+        container = cur.fetchone()[0]
+    print(f"  Container: {container}")
+
+    failures = []
+    try:
+        for sql in statements:
+            sql = sql.strip()
+            if not sql:
+                continue
+            try:
+                cur.execute(sql)
+                conn.commit()
+            except Exception as exc:
+                text = str(exc)
+                if "ORA-01920" in text or "ORA-00955" in text:
+                    print(f"  Omis (exista deja): {sql[:60]}...")
+                else:
+                    print(f"  EROARE: {text.splitlines()[0]}")
+                    print(f"          SQL: {sql[:110]}")
+                    failures.append((sql, text))
+    finally:
+        conn.close()
+
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} instructiune(i) SYSDBA au esuat. "
+            "Vezi erorile de mai sus."
+        )
+
+def run_as(user, pwd, statements, label=""):
+    conn = oracledb.connect(user=user, password=pwd, dsn=dsn())
+    cur = conn.cursor()
+    ok = err = 0
+    for sql in statements:
+        sql = sql.strip()
+        if not sql or sql.startswith("--"):
+            continue
+        try:
+            cur.execute(sql)
+            ok += 1
+        except Exception as e:
+            if "ORA-00955" in str(e) or "ORA-01430" in str(e) or "ORA-02260" in str(e):
+                ok += 1  # exista deja
+            else:
+                print(f"  EROARE [{label}]: {str(e)[:100]}")
+                err += 1
+    conn.commit()
+    conn.close()
+    return ok, err
+
+if not wait_for_oracle():
+    print("Oracle nu e gata. Incearca: docker start stoma-oracle")
+    sys.exit(1)
+
+print(f"\n[1/4] Creare utilizatori {OLTP_USER} si {DW_USER}...")
+
+# Fara DEFAULT TABLESPACE: imaginea lite nu are tablespace-ul USERS (ORA-00959).
+# UNLIMITED TABLESPACE e necesar, RESOURCE nu il mai include din 12c (ORA-01950).
+run_as_sys([
+    f"CREATE USER {OLTP_USER} IDENTIFIED BY {OLTP_PASSWORD}",
+    f"GRANT UNLIMITED TABLESPACE TO {OLTP_USER}",
+    f"GRANT CONNECT, RESOURCE TO {OLTP_USER}",
+    f"GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE TRIGGER, "
+    f"CREATE VIEW TO {OLTP_USER}",
+
+    f"CREATE USER {DW_USER} IDENTIFIED BY {DW_PASSWORD}",
+    f"GRANT UNLIMITED TABLESPACE TO {DW_USER}",
+    f"GRANT CONNECT, RESOURCE TO {DW_USER}",
+    # Necesare pentru query rewrite pe materialized views
+    f"GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE TRIGGER, "
+    f"CREATE VIEW, CREATE DIMENSION, CREATE MATERIALIZED VIEW, "
+    f"QUERY REWRITE TO {DW_USER}",
+    f"GRANT SELECT ANY TABLE TO {DW_USER}",
+])
+print("  Utilizatori creati.")
+
+print("\n[2/4] Creare tabele OLTP...")
+
+ddl_oltp = [
+    """CREATE SEQUENCE seq_pacienti      START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_medici        START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_asistente     START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_cabinete      START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_servicii      START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_programari    START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_prog_servicii START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_facturi       START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_materiale     START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_utilizari_mat START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE SEQUENCE seq_istoric       START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE""",
+    """CREATE TABLE CABINETE (
+      ID_CABINET   NUMBER(4)     NOT NULL,
+      DENUMIRE     VARCHAR2(50)  NOT NULL,
+      ETAJ         NUMBER(2)     DEFAULT 0,
+      NR_FOTOLII   NUMBER(2)     DEFAULT 1,
+      ECHIPAMENT   VARCHAR2(200),
+      ACTIV        CHAR(1)       DEFAULT 'Y' NOT NULL,
+      CONSTRAINT PK_CABINETE PRIMARY KEY (ID_CABINET),
+      CONSTRAINT CK_CABINET_ACTIV CHECK (ACTIV IN ('Y','N')),
+      CONSTRAINT CK_CABINET_FOTOLII CHECK (NR_FOTOLII > 0)
+    )""",
+    """CREATE TABLE MEDICI (
+      ID_MEDIC        NUMBER(4)     NOT NULL,
+      NUME            VARCHAR2(50)  NOT NULL,
+      PRENUME         VARCHAR2(50)  NOT NULL,
+      SPECIALIZARE    VARCHAR2(80)  NOT NULL,
+      TELEFON         VARCHAR2(15),
+      EMAIL           VARCHAR2(80),
+      DATA_ANGAJARII  DATE          NOT NULL,
+      SALARIU         NUMBER(10,2),
+      ACTIV           CHAR(1)       DEFAULT 'Y' NOT NULL,
+      CONSTRAINT PK_MEDICI PRIMARY KEY (ID_MEDIC),
+      CONSTRAINT UQ_MEDICI_EMAIL UNIQUE (EMAIL),
+      CONSTRAINT CK_MEDIC_ACTIV CHECK (ACTIV IN ('Y','N')),
+      CONSTRAINT CK_MEDIC_SALARIU CHECK (SALARIU > 0)
+    )""",
+    """CREATE TABLE ASISTENTE (
+      ID_ASISTENTA    NUMBER(4)     NOT NULL,
+      NUME            VARCHAR2(50)  NOT NULL,
+      PRENUME         VARCHAR2(50)  NOT NULL,
+      TELEFON         VARCHAR2(15),
+      EMAIL           VARCHAR2(80),
+      DATA_ANGAJARII  DATE          NOT NULL,
+      ID_CABINET      NUMBER(4),
+      ACTIV           CHAR(1)       DEFAULT 'Y' NOT NULL,
+      CONSTRAINT PK_ASISTENTE PRIMARY KEY (ID_ASISTENTA),
+      CONSTRAINT FK_ASIST_CABINET FOREIGN KEY (ID_CABINET) REFERENCES CABINETE(ID_CABINET),
+      CONSTRAINT CK_ASIST_ACTIV CHECK (ACTIV IN ('Y','N'))
+    )""",
+    """CREATE TABLE PACIENTI (
+      ID_PACIENT         NUMBER(6)     NOT NULL,
+      NUME               VARCHAR2(50)  NOT NULL,
+      PRENUME            VARCHAR2(50)  NOT NULL,
+      CNP                VARCHAR2(13),
+      DATA_NASTERII      DATE,
+      TELEFON            VARCHAR2(15),
+      EMAIL              VARCHAR2(80),
+      ADRESA             VARCHAR2(200),
+      ORAS               VARCHAR2(50)  DEFAULT 'Bucuresti',
+      JUDET              VARCHAR2(50)  DEFAULT 'Ilfov',
+      DATA_INREGISTRARII DATE          DEFAULT SYSDATE,
+      ACTIV              CHAR(1)       DEFAULT 'Y' NOT NULL,
+      CONSTRAINT PK_PACIENTI PRIMARY KEY (ID_PACIENT),
+      CONSTRAINT UQ_PACIENTI_CNP UNIQUE (CNP),
+      CONSTRAINT CK_PACIENT_ACTIV CHECK (ACTIV IN ('Y','N'))
+    )""",
+    """CREATE TABLE SERVICII (
+      ID_SERVICIU   NUMBER(4)     NOT NULL,
+      DENUMIRE      VARCHAR2(100) NOT NULL,
+      DESCRIERE     VARCHAR2(500),
+      CATEGORIE     VARCHAR2(50)  NOT NULL,
+      PRET          NUMBER(10,2)  NOT NULL,
+      DURATA_MIN    NUMBER(4)     DEFAULT 30,
+      TVA_PROCENT   NUMBER(5,2)   DEFAULT 19,
+      ACTIV         CHAR(1)       DEFAULT 'Y' NOT NULL,
+      CONSTRAINT PK_SERVICII PRIMARY KEY (ID_SERVICIU),
+      CONSTRAINT CK_SERVICII_PRET CHECK (PRET >= 0),
+      CONSTRAINT CK_SERVICII_ACTIV CHECK (ACTIV IN ('Y','N')),
+      CONSTRAINT CK_SERVICII_DURATA CHECK (DURATA_MIN > 0),
+      CONSTRAINT CK_SERVICII_CAT CHECK (CATEGORIE IN (
+        'Preventie','Estetica','Restauratoare','Chirurgie','Ortodontie',
+        'Endodontie','Parodontologie','Protetica','Radiologie','Alte'))
+    )""",
+    """CREATE TABLE MATERIALE (
+      ID_MATERIAL     NUMBER(4)     NOT NULL,
+      DENUMIRE        VARCHAR2(100) NOT NULL,
+      UNITATE_MASURA  VARCHAR2(20)  DEFAULT 'buc',
+      STOC_CURENT     NUMBER(10,2)  DEFAULT 0,
+      PRET_UNITAR     NUMBER(10,2)  NOT NULL,
+      CATEGORIE       VARCHAR2(50),
+      FURNIZOR        VARCHAR2(100),
+      ACTIV           CHAR(1)       DEFAULT 'Y' NOT NULL,
+      CONSTRAINT PK_MATERIALE PRIMARY KEY (ID_MATERIAL),
+      CONSTRAINT CK_MAT_PRET CHECK (PRET_UNITAR >= 0),
+      CONSTRAINT CK_MAT_STOC CHECK (STOC_CURENT >= 0),
+      CONSTRAINT CK_MAT_ACTIV CHECK (ACTIV IN ('Y','N'))
+    )""",
+    """CREATE TABLE PROGRAMARI (
+      ID_PROGRAMARE  NUMBER(6)     NOT NULL,
+      ID_PACIENT     NUMBER(6)     NOT NULL,
+      ID_MEDIC       NUMBER(4)     NOT NULL,
+      ID_CABINET     NUMBER(4)     NOT NULL,
+      DATA_PROG      DATE          NOT NULL,
+      ORA_START      VARCHAR2(5)   NOT NULL,
+      ORA_SFARSIT    VARCHAR2(5),
+      STATUS         VARCHAR2(20)  DEFAULT 'Programata' NOT NULL,
+      OBSERVATII     VARCHAR2(500),
+      DATA_CREARE    DATE          DEFAULT SYSDATE,
+      CONSTRAINT PK_PROGRAMARI PRIMARY KEY (ID_PROGRAMARE),
+      CONSTRAINT FK_PROG_PACIENT  FOREIGN KEY (ID_PACIENT)  REFERENCES PACIENTI(ID_PACIENT),
+      CONSTRAINT FK_PROG_MEDIC    FOREIGN KEY (ID_MEDIC)    REFERENCES MEDICI(ID_MEDIC),
+      CONSTRAINT FK_PROG_CABINET  FOREIGN KEY (ID_CABINET)  REFERENCES CABINETE(ID_CABINET),
+      CONSTRAINT CK_PROG_STATUS   CHECK (STATUS IN ('Programata','Confirmata','Finalizata','Anulata','Neprezentata'))
+    )""",
+    """CREATE TABLE PROGRAMARI_SERVICII (
+      ID_PROG_SERV   NUMBER(8)     NOT NULL,
+      ID_PROGRAMARE  NUMBER(6)     NOT NULL,
+      ID_SERVICIU    NUMBER(4)     NOT NULL,
+      CANTITATE      NUMBER(4)     DEFAULT 1,
+      PRET_APLICAT   NUMBER(10,2)  NOT NULL,
+      DISCOUNT_PROC  NUMBER(5,2)   DEFAULT 0,
+      CONSTRAINT PK_PROG_SERVICII PRIMARY KEY (ID_PROG_SERV),
+      CONSTRAINT FK_PS_PROGRAMARE FOREIGN KEY (ID_PROGRAMARE) REFERENCES PROGRAMARI(ID_PROGRAMARE),
+      CONSTRAINT FK_PS_SERVICIU   FOREIGN KEY (ID_SERVICIU)   REFERENCES SERVICII(ID_SERVICIU),
+      CONSTRAINT UQ_PS_UNIQUE     UNIQUE (ID_PROGRAMARE, ID_SERVICIU),
+      CONSTRAINT CK_PS_CANT       CHECK (CANTITATE > 0),
+      CONSTRAINT CK_PS_DISCOUNT   CHECK (DISCOUNT_PROC BETWEEN 0 AND 100)
+    )""",
+    """CREATE TABLE FACTURI (
+      ID_FACTURA     NUMBER(8)     NOT NULL,
+      ID_PROGRAMARE  NUMBER(6)     NOT NULL,
+      ID_PACIENT     NUMBER(6)     NOT NULL,
+      DATA_FACTURA   DATE          DEFAULT SYSDATE NOT NULL,
+      SUBTOTAL       NUMBER(10,2)  NOT NULL,
+      SUMA_TVA       NUMBER(10,2)  DEFAULT 0,
+      TOTAL          NUMBER(10,2)  NOT NULL,
+      SUMA_PLATITA   NUMBER(10,2)  DEFAULT 0,
+      METODA_PLATA   VARCHAR2(20),
+      STATUS_PLATA   VARCHAR2(20)  DEFAULT 'Neplatita',
+      CONSTRAINT PK_FACTURI PRIMARY KEY (ID_FACTURA),
+      CONSTRAINT FK_FACT_PROG    FOREIGN KEY (ID_PROGRAMARE) REFERENCES PROGRAMARI(ID_PROGRAMARE),
+      CONSTRAINT FK_FACT_PACIENT FOREIGN KEY (ID_PACIENT)    REFERENCES PACIENTI(ID_PACIENT),
+      CONSTRAINT CK_FACT_TOTAL   CHECK (TOTAL >= 0),
+      CONSTRAINT CK_FACT_STATUS  CHECK (STATUS_PLATA IN ('Neplatita','Partiala','Achitata')),
+      CONSTRAINT CK_FACT_METODA  CHECK (METODA_PLATA IN ('Cash','Card','Transfer','Asigurare',NULL))
+    )""",
+    """CREATE TABLE UTILIZARI_MATERIALE (
+      ID_UTILIZARE        NUMBER(8)    NOT NULL,
+      ID_PROGRAMARE       NUMBER(6)    NOT NULL,
+      ID_MATERIAL         NUMBER(4)    NOT NULL,
+      CANTITATE_UTILIZATA NUMBER(10,3) NOT NULL,
+      DATA_UTILIZARE      DATE         DEFAULT SYSDATE,
+      CONSTRAINT PK_UTILIZARI_MAT   PRIMARY KEY (ID_UTILIZARE),
+      CONSTRAINT FK_UTIL_PROGRAMARE FOREIGN KEY (ID_PROGRAMARE) REFERENCES PROGRAMARI(ID_PROGRAMARE),
+      CONSTRAINT FK_UTIL_MATERIAL   FOREIGN KEY (ID_MATERIAL)   REFERENCES MATERIALE(ID_MATERIAL),
+      CONSTRAINT CK_UTIL_CANT       CHECK (CANTITATE_UTILIZATA > 0)
+    )""",
+    """CREATE TABLE ISTORIC_MEDICAL (
+      ID_ISTORIC    NUMBER(8)     NOT NULL,
+      ID_PACIENT    NUMBER(6)     NOT NULL,
+      ID_MEDIC      NUMBER(4)     NOT NULL,
+      ID_PROGRAMARE NUMBER(6),
+      DIAGNOSTIC    VARCHAR2(500) NOT NULL,
+      TRATAMENT_REC VARCHAR2(500),
+      DATA_INREG    DATE          DEFAULT SYSDATE NOT NULL,
+      OBSERVATII    VARCHAR2(1000),
+      CONSTRAINT PK_ISTORIC        PRIMARY KEY (ID_ISTORIC),
+      CONSTRAINT FK_IST_PACIENT    FOREIGN KEY (ID_PACIENT)    REFERENCES PACIENTI(ID_PACIENT),
+      CONSTRAINT FK_IST_MEDIC      FOREIGN KEY (ID_MEDIC)      REFERENCES MEDICI(ID_MEDIC),
+      CONSTRAINT FK_IST_PROGRAMARE FOREIGN KEY (ID_PROGRAMARE) REFERENCES PROGRAMARI(ID_PROGRAMARE)
+    )""",
+]
+
+triggers = [
+    ("CABINETE","ID_CABINET","seq_cabinete","trg_cabinete_bi"),
+    ("MEDICI","ID_MEDIC","seq_medici","trg_medici_bi"),
+    ("ASISTENTE","ID_ASISTENTA","seq_asistente","trg_asistente_bi"),
+    ("PACIENTI","ID_PACIENT","seq_pacienti","trg_pacienti_bi"),
+    ("SERVICII","ID_SERVICIU","seq_servicii","trg_servicii_bi"),
+    ("MATERIALE","ID_MATERIAL","seq_materiale","trg_materiale_bi"),
+    ("PROGRAMARI","ID_PROGRAMARE","seq_programari","trg_programari_bi"),
+    ("PROGRAMARI_SERVICII","ID_PROG_SERV","seq_prog_servicii","trg_prog_serv_bi"),
+    ("FACTURI","ID_FACTURA","seq_facturi","trg_facturi_bi"),
+    ("UTILIZARI_MATERIALE","ID_UTILIZARE","seq_utilizari_mat","trg_util_mat_bi"),
+    ("ISTORIC_MEDICAL","ID_ISTORIC","seq_istoric","trg_istoric_bi"),
+]
+
+trg_sqls = [f"""CREATE OR REPLACE TRIGGER {trg}
+  BEFORE INSERT ON {tbl} FOR EACH ROW
+BEGIN IF :NEW.{col} IS NULL THEN :NEW.{col} := {seq}.NEXTVAL; END IF; END;"""
+for tbl,col,seq,trg in triggers]
+
+ok, err = run_as(OLTP_USER, OLTP_PASSWORD, ddl_oltp + trg_sqls, "DDL")
+print(f"  DDL: {ok} ok, {err} erori")
+
+print("\n[3/4] Inserez date de test OLTP...")
+
+dml = [
+    "INSERT INTO CABINETE VALUES (NULL,'Cabinet 1 - Consultatie',0,1,'Unit dentar Castellini, Radiograf periapical','Y')",
+    "INSERT INTO CABINETE VALUES (NULL,'Cabinet 2 - Chirurgie',1,1,'Unit dentar Sirona, Lampa scialitic, Aspirator chirurgical','Y')",
+    "INSERT INTO CABINETE VALUES (NULL,'Cabinet 3 - Ortodontie',1,1,'Unit dentar KaVo, Scanner intraoral iTero','Y')",
+    "INSERT INTO CABINETE VALUES (NULL,'Cabinet 4 - Radiologie',0,2,'CBCT Planmeca, OPG Orthophos','Y')",
+    "INSERT INTO CABINETE VALUES (NULL,'Cabinet 5 - Estetica',2,1,'Unit dentar A-dec, Lampa fotopolimerizare LED','Y')",
+    "INSERT INTO MEDICI VALUES (NULL,'Ionescu','Andrei','Medicina dentara generala','0722111001','a.ionescu@stomaclinic.ro',TO_DATE('2015-03-01','YYYY-MM-DD'),12000,'Y')",
+    "INSERT INTO MEDICI VALUES (NULL,'Popescu','Maria','Ortodontie','0722111002','m.popescu@stomaclinic.ro',TO_DATE('2017-06-15','YYYY-MM-DD'),14000,'Y')",
+    "INSERT INTO MEDICI VALUES (NULL,'Gheorghe','Constantin','Chirurgie oro-maxilo-faciala','0722111003','c.gheorghe@stomaclinic.ro',TO_DATE('2012-01-10','YYYY-MM-DD'),16000,'Y')",
+    "INSERT INTO MEDICI VALUES (NULL,'Munteanu','Elena','Endodontie','0722111004','e.munteanu@stomaclinic.ro',TO_DATE('2019-09-01','YYYY-MM-DD'),13000,'Y')",
+    "INSERT INTO MEDICI VALUES (NULL,'Dumitrescu','Bogdan','Estetica dentara','0722111005','b.dumitrescu@stomaclinic.ro',TO_DATE('2020-02-01','YYYY-MM-DD'),11000,'Y')",
+    "INSERT INTO ASISTENTE VALUES (NULL,'Radu','Cristina','0733200001','c.radu@stomaclinic.ro',TO_DATE('2016-04-01','YYYY-MM-DD'),1,'Y')",
+    "INSERT INTO ASISTENTE VALUES (NULL,'Stan','Ioana','0733200002','i.stan@stomaclinic.ro',TO_DATE('2018-07-01','YYYY-MM-DD'),2,'Y')",
+    "INSERT INTO ASISTENTE VALUES (NULL,'Florea','Alina','0733200003','a.florea@stomaclinic.ro',TO_DATE('2021-01-10','YYYY-MM-DD'),3,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Mihai','Ion','1850312345678',TO_DATE('1985-03-12','YYYY-MM-DD'),'0744300001','ion.mihai@gmail.com','Str. Florilor 10','Bucuresti','Ilfov',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Niculescu','Ana','2900614234567',TO_DATE('1990-06-14','YYYY-MM-DD'),'0744300002','ana.niculescu@gmail.com','Bd. Unirii 25','Bucuresti','Ilfov',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Barbu','Radu','1780422123456',TO_DATE('1978-04-22','YYYY-MM-DD'),'0744300003','radu.barbu@yahoo.com','Str. Primaverii 5','Cluj-Napoca','Cluj',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Constantin','Mihaela','2950810345678',TO_DATE('1995-08-10','YYYY-MM-DD'),'0744300004','m.constantin@gmail.com','Calea Victoriei 100','Bucuresti','Ilfov',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Lazar','Gheorghe','1680115234567',TO_DATE('1968-01-15','YYYY-MM-DD'),'0744300005','gh.lazar@yahoo.com','Str. Republicii 7','Brasov','Brasov',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Popa','Daniela','2820920345678',TO_DATE('1982-09-20','YYYY-MM-DD'),'0744300006','d.popa@gmail.com','Sos. Nordului 33','Bucuresti','Ilfov',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Toma','Alexandru','1000203456789',TO_DATE('2000-02-03','YYYY-MM-DD'),'0744300007','alex.toma@gmail.com','Bd. Magheru 18','Bucuresti','Ilfov',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Dima','Roxana','2930707234567',TO_DATE('1993-07-07','YYYY-MM-DD'),'0744300008','rox.dima@yahoo.com','Str. Eminescu 3','Iasi','Iasi',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Voicu','Marius','1751122345670',TO_DATE('1975-11-22','YYYY-MM-DD'),'0744300009','m.voicu@gmail.com','Str. Stefan cel Mare','Timisoara','Timis',SYSDATE,'Y')",
+    "INSERT INTO PACIENTI VALUES (NULL,'Neagu','Laura','2880401234568',TO_DATE('1988-04-01','YYYY-MM-DD'),'0744300010','l.neagu@gmail.com','Aleea Florilor 4','Bucuresti','Ilfov',SYSDATE,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Consultatie initiala','Examinare clinica completa si plan de tratament','Preventie',150,30,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Detartraj ultrasonic','Curatare depozite de tartru prin ultrasunete','Preventie',200,45,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Periaj profesional + fluorizare','Periaj cu pasta profilactica si aplicare gel fluorurat','Preventie',180,30,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Plomba compozit (1 fata)','Obturatie din compozit pentru carie mica','Restauratoare',350,60,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Plomba compozit (2-3 fete)','Obturatie compozit pentru carie medie/mare','Restauratoare',500,75,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Tratament canal (monoradicular)','Tratament endodontic dinte cu un canal radicular','Endodontie',800,90,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Tratament canal (multiradicular)','Tratament endodontic dinte cu mai multe canale','Endodontie',1200,120,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Extractie simpla','Extractia unui dinte fara complicatii','Chirurgie',300,30,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Extractie chirurgicala','Extractie dinte inclus sau partial erupt','Chirurgie',600,60,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Aparat ortodontic metalic','Montare aparat fix metalic (per arcada)','Ortodontie',2500,120,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Aparat ortodontic ceramic','Montare aparat fix ceramic (per arcada)','Ortodontie',3500,120,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Consultatie ortodontica','Evaluare si plan de tratament ortodontic','Ortodontie',200,45,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Albire dentara profesionala','Sistem Zoom whitening in cabinet','Estetica',1200,90,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Fatete ceramice (per dinte)','Fatete din ceramica pentru estetic superioara','Estetica',2000,90,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Radiografie retroalveolara','Radiografie periapicala digitala','Radiologie',80,10,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'OPG (panoramica)','Ortopantomograma digitala','Radiologie',180,15,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Coroana ceramica (zirconia)','Coroana dentara din zirconia','Protetica',2500,120,19,'Y')",
+    "INSERT INTO SERVICII VALUES (NULL,'Detartraj + periaj (mentinere)','Sedinta de igienizare profesionala periodica','Preventie',300,60,19,'Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Compozit fotopolimerizabil Filtek Z350','g',500,85,'Restauratoare','3M ESPE','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Sistem adeziv Scotchbond','ml',100,120,'Restauratoare','3M ESPE','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Hipoclorit de sodiu 5.25%','ml',2000,0.05,'Endodontie','Clinic','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Ace endodontice Protaper Next','set',50,180,'Endodontie','Dentsply','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Material amprenta polivinil siloxan','g',300,55,'Protetica','Zhermack','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Anestezic Ubistezin 4%','fiola',200,8,'Chirurgie','3M ESPE','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Gel fluor Elmex','ml',500,0.30,'Preventie','GABA','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Vata chirurgicala','g',1000,0.05,'Chirurgie','Hartmann','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Fir sutura 3-0','buc',100,12,'Chirurgie','Ethicon','Y')",
+    "INSERT INTO MATERIALE VALUES (NULL,'Pasta profilactica','g',400,0.20,'Preventie','Oral-B','Y')",
+    "INSERT INTO PROGRAMARI VALUES (NULL,1,1,1,TO_DATE('2024-01-10','YYYY-MM-DD'),'10:00','10:30','Finalizata','Prima vizita',SYSDATE-480)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,2,2,3,TO_DATE('2024-01-15','YYYY-MM-DD'),'11:00','12:00','Finalizata','Consultatie ortodontie',SYSDATE-475)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,3,3,2,TO_DATE('2024-02-05','YYYY-MM-DD'),'09:00','09:30','Finalizata',NULL,SYSDATE-455)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,4,5,5,TO_DATE('2024-02-20','YYYY-MM-DD'),'14:00','15:00','Finalizata','Albire + consultatie',SYSDATE-440)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,1,1,1,TO_DATE('2024-03-03','YYYY-MM-DD'),'09:30','10:30','Finalizata',NULL,SYSDATE-430)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,5,4,4,TO_DATE('2024-03-12','YYYY-MM-DD'),'10:00','10:15','Finalizata','OPG cerut de medic',SYSDATE-421)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,2,2,3,TO_DATE('2024-04-08','YYYY-MM-DD'),'11:00','12:00','Finalizata','Control aparat ortodontic',SYSDATE-395)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,6,1,1,TO_DATE('2024-04-15','YYYY-MM-DD'),'15:00','16:00','Finalizata',NULL,SYSDATE-388)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,3,3,2,TO_DATE('2024-05-06','YYYY-MM-DD'),'09:00','10:00','Finalizata','Extractie molar 3',SYSDATE-367)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,7,5,5,TO_DATE('2024-05-20','YYYY-MM-DD'),'10:00','11:30','Finalizata','Albire dentara',SYSDATE-353)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,8,1,1,TO_DATE('2024-06-03','YYYY-MM-DD'),'12:00','12:30','Finalizata',NULL,SYSDATE-339)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,9,4,4,TO_DATE('2024-06-17','YYYY-MM-DD'),'09:00','09:15','Finalizata','Radiografie urgenta',SYSDATE-325)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,10,1,1,TO_DATE('2024-07-01','YYYY-MM-DD'),'10:00','11:00','Finalizata','Tratament canal',SYSDATE-311)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,1,1,1,TO_DATE('2024-07-22','YYYY-MM-DD'),'09:00','10:00','Finalizata','Detartraj periodic',SYSDATE-290)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,4,5,5,TO_DATE('2024-08-05','YYYY-MM-DD'),'11:00','12:30','Finalizata','Fatete ceramice evaluare',SYSDATE-276)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,5,3,2,TO_DATE('2024-08-19','YYYY-MM-DD'),'14:00','14:45','Finalizata',NULL,SYSDATE-262)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,6,4,4,TO_DATE('2024-09-09','YYYY-MM-DD'),'10:00','10:15','Finalizata',NULL,SYSDATE-241)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,7,5,5,TO_DATE('2024-09-23','YYYY-MM-DD'),'15:00','16:00','Finalizata',NULL,SYSDATE-227)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,8,1,1,TO_DATE('2024-10-07','YYYY-MM-DD'),'09:00','10:00','Finalizata',NULL,SYSDATE-213)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,9,3,3,TO_DATE('2024-10-21','YYYY-MM-DD'),'11:00','12:00','Finalizata',NULL,SYSDATE-199)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,10,2,2,TO_DATE('2024-11-04','YYYY-MM-DD'),'10:00','10:30','Finalizata',NULL,SYSDATE-185)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,1,1,1,TO_DATE('2024-11-18','YYYY-MM-DD'),'12:00','13:00','Finalizata','Coroana zirconia',SYSDATE-171)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,2,2,3,TO_DATE('2024-12-02','YYYY-MM-DD'),'09:00','10:00','Finalizata',NULL,SYSDATE-157)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,3,3,2,TO_DATE('2024-12-16','YYYY-MM-DD'),'10:00','11:00','Finalizata',NULL,SYSDATE-143)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,4,5,5,TO_DATE('2025-01-13','YYYY-MM-DD'),'14:00','16:00','Finalizata','Fatete ceramice 2 dinti',SYSDATE-132)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,5,1,1,TO_DATE('2025-01-27','YYYY-MM-DD'),'10:00','10:30','Finalizata',NULL,SYSDATE-118)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,6,3,2,TO_DATE('2025-02-10','YYYY-MM-DD'),'09:00','09:30','Finalizata',NULL,SYSDATE-103)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,7,5,5,TO_DATE('2025-02-24','YYYY-MM-DD'),'11:00','12:30','Finalizata',NULL,SYSDATE-89)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,8,1,1,TO_DATE('2025-03-10','YYYY-MM-DD'),'10:00','11:00','Finalizata',NULL,SYSDATE-75)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,9,3,3,TO_DATE('2025-03-24','YYYY-MM-DD'),'14:00','15:00','Finalizata',NULL,SYSDATE-61)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,10,4,4,TO_DATE('2025-04-07','YYYY-MM-DD'),'09:00','09:15','Finalizata',NULL,SYSDATE-47)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,1,1,1,TO_DATE('2025-04-21','YYYY-MM-DD'),'10:00','11:00','Finalizata',NULL,SYSDATE-33)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,2,2,3,TO_DATE('2025-05-05','YYYY-MM-DD'),'11:00','12:00','Finalizata',NULL,SYSDATE-19)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,3,3,2,TO_DATE('2025-05-19','YYYY-MM-DD'),'09:00','09:30','Programata',NULL,SYSDATE-5)",
+    "INSERT INTO PROGRAMARI VALUES (NULL,4,1,1,TO_DATE('2025-05-26','YYYY-MM-DD'),'15:00','16:00','Programata',NULL,SYSDATE)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,1,1,1,150,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,1,15,1,80,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,2,12,1,200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,3,8,1,300,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,4,13,1,1200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,4,1,1,150,10)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,5,2,1,200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,5,3,1,180,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,6,16,1,180,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,7,12,1,200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,8,4,1,350,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,8,15,1,80,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,9,9,1,600,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,10,13,1,1200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,11,1,1,150,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,12,15,1,80,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,13,6,1,800,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,13,15,1,80,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,14,18,1,300,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,15,14,1,2000,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,16,5,1,500,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,17,15,1,80,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,18,13,1,1200,5)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,19,4,2,350,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,20,10,1,2500,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,21,2,1,200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,22,17,1,2500,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,22,7,1,800,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,23,12,1,200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,24,8,1,300,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,25,14,2,2000,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,26,1,1,150,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,27,9,1,600,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,28,13,1,1200,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,29,6,1,800,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,30,11,1,3500,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,31,16,1,180,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,32,18,1,300,0)",
+    "INSERT INTO PROGRAMARI_SERVICII VALUES (NULL,33,12,1,200,0)",
+    "INSERT INTO FACTURI VALUES (NULL,1,1,TO_DATE('2024-01-10','YYYY-MM-DD'),230,43.70,273.70,273.70,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,2,2,TO_DATE('2024-01-15','YYYY-MM-DD'),200,38.00,238.00,238.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,3,3,TO_DATE('2024-02-05','YYYY-MM-DD'),300,57.00,357.00,357.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,4,4,TO_DATE('2024-02-20','YYYY-MM-DD'),1485,282.15,1767.15,1767.15,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,5,5,TO_DATE('2024-03-03','YYYY-MM-DD'),380,72.20,452.20,452.20,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,6,6,TO_DATE('2024-03-12','YYYY-MM-DD'),180,34.20,214.20,214.20,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,7,7,TO_DATE('2024-04-08','YYYY-MM-DD'),200,38.00,238.00,238.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,8,8,TO_DATE('2024-04-15','YYYY-MM-DD'),430,81.70,511.70,511.70,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,9,9,TO_DATE('2024-05-06','YYYY-MM-DD'),600,114.00,714.00,714.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,10,10,TO_DATE('2024-05-20','YYYY-MM-DD'),1200,228.00,1428.00,1428.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,11,8,TO_DATE('2024-06-03','YYYY-MM-DD'),150,28.50,178.50,178.50,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,12,9,TO_DATE('2024-06-17','YYYY-MM-DD'),80,15.20,95.20,95.20,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,13,10,TO_DATE('2024-07-01','YYYY-MM-DD'),880,167.20,1047.20,1000.00,'Transfer','Partiala')",
+    "INSERT INTO FACTURI VALUES (NULL,14,1,TO_DATE('2024-07-22','YYYY-MM-DD'),300,57.00,357.00,357.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,15,4,TO_DATE('2024-08-05','YYYY-MM-DD'),2000,380.00,2380.00,2380.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,16,5,TO_DATE('2024-08-19','YYYY-MM-DD'),500,95.00,595.00,595.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,17,6,TO_DATE('2024-09-09','YYYY-MM-DD'),80,15.20,95.20,95.20,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,18,7,TO_DATE('2024-09-23','YYYY-MM-DD'),1140,216.60,1356.60,1356.60,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,19,8,TO_DATE('2024-10-07','YYYY-MM-DD'),700,133.00,833.00,833.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,20,9,TO_DATE('2024-10-21','YYYY-MM-DD'),2500,475.00,2975.00,2975.00,'Transfer','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,21,10,TO_DATE('2024-11-04','YYYY-MM-DD'),200,38.00,238.00,238.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,22,1,TO_DATE('2024-11-18','YYYY-MM-DD'),3300,627.00,3927.00,3927.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,23,2,TO_DATE('2024-12-02','YYYY-MM-DD'),200,38.00,238.00,238.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,24,3,TO_DATE('2024-12-16','YYYY-MM-DD'),300,57.00,357.00,0.00,'Asigurare','Neplatita')",
+    "INSERT INTO FACTURI VALUES (NULL,25,4,TO_DATE('2025-01-13','YYYY-MM-DD'),4000,760.00,4760.00,4760.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,26,5,TO_DATE('2025-01-27','YYYY-MM-DD'),150,28.50,178.50,178.50,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,27,6,TO_DATE('2025-02-10','YYYY-MM-DD'),600,114.00,714.00,714.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,28,7,TO_DATE('2025-02-24','YYYY-MM-DD'),1200,228.00,1428.00,1428.00,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,29,8,TO_DATE('2025-03-10','YYYY-MM-DD'),800,152.00,952.00,952.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,30,9,TO_DATE('2025-03-24','YYYY-MM-DD'),3500,665.00,4165.00,4165.00,'Transfer','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,31,10,TO_DATE('2025-04-07','YYYY-MM-DD'),180,34.20,214.20,214.20,'Cash','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,32,1,TO_DATE('2025-04-21','YYYY-MM-DD'),300,57.00,357.00,357.00,'Card','Achitata')",
+    "INSERT INTO FACTURI VALUES (NULL,33,2,TO_DATE('2025-05-05','YYYY-MM-DD'),200,38.00,238.00,238.00,'Cash','Achitata')",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,1,7,2.0,TO_DATE('2024-01-10','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,3,6,1.0,TO_DATE('2024-02-05','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,3,8,5.0,TO_DATE('2024-02-05','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,5,1,1.5,TO_DATE('2024-03-03','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,5,10,2.0,TO_DATE('2024-03-03','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,8,1,1.0,TO_DATE('2024-04-15','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,8,2,0.5,TO_DATE('2024-04-15','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,9,6,2.0,TO_DATE('2024-05-06','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,9,9,1.0,TO_DATE('2024-05-06','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,13,3,100.0,TO_DATE('2024-07-01','YYYY-MM-DD'))",
+    "INSERT INTO UTILIZARI_MATERIALE VALUES (NULL,13,4,1.0,TO_DATE('2024-07-01','YYYY-MM-DD'))",
+    "INSERT INTO ISTORIC_MEDICAL VALUES (NULL,1,1,1,'Carie medie la dintele 16. Stare generala buna a danturii.','Obturatie compozit si detartraj la urmatoarea vizita',TO_DATE('2024-01-10','YYYY-MM-DD'),NULL)",
+    "INSERT INTO ISTORIC_MEDICAL VALUES (NULL,2,2,2,'Malocluzie de clasa II. Indicate tratament ortodontic.','Aparat fix metalic sau ceramic, durata estimata 18 luni',TO_DATE('2024-01-15','YYYY-MM-DD'),NULL)",
+    "INSERT INTO ISTORIC_MEDICAL VALUES (NULL,3,3,3,'Molar 3 inferior stang inclus partial. Pericoronarita recurenta.','Extractie chirurgicala molar 3',TO_DATE('2024-02-05','YYYY-MM-DD'),NULL)",
+    "INSERT INTO ISTORIC_MEDICAL VALUES (NULL,4,5,4,'Dinti cu coloratii intrinseci. Pacienta doreste estetica superioara.','Albire dentara, eventual fatete ceramice',TO_DATE('2024-02-20','YYYY-MM-DD'),NULL)",
+    "INSERT INTO ISTORIC_MEDICAL VALUES (NULL,10,5,10,'Coloratii extrinseci semnificative. Pacientul fumeaza.','Albire profesionala, renuntare la fumat',TO_DATE('2024-05-20','YYYY-MM-DD'),NULL)",
+    "INSERT INTO ISTORIC_MEDICAL VALUES (NULL,10,4,13,'Dinte 36 cu necroza pulpara. Necesita tratament endodontic.','Tratament canal si coroana de acoperire',TO_DATE('2024-07-01','YYYY-MM-DD'),NULL)",
+]
+
+ok, err = run_as(OLTP_USER, OLTP_PASSWORD, dml, "DML")
+print(f"  DML: {ok} ok, {err} erori")
+
+print("\n[4/4] Verificare numar de randuri OLTP...")
+conn = connect_oltp()
+cur = conn.cursor()
+for t in ['CABINETE','MEDICI','ASISTENTE','PACIENTI','SERVICII','MATERIALE',
+          'PROGRAMARI','PROGRAMARI_SERVICII','FACTURI','UTILIZARI_MATERIALE','ISTORIC_MEDICAL']:
+    cur.execute(f"SELECT COUNT(*) FROM {t}")
+    print(f"  {t}: {cur.fetchone()[0]}")
+conn.close()
+
+print("\n" + "="*50)
+print("✅ OLTP complet! Ruleaza acum aplicatia:")
+print("   python app/app.py")
+print("   Deschide: http://localhost:5001")
+print("="*50)

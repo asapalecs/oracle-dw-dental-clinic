@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="mb-4">
+  <h5 class="fw-bold text-dark mb-0"><i class="bi bi-house me-2"></i>Panou principal</h5>
+  <p class="text-muted small mb-0">Data Warehouse · Clinica Stomatologica · 2025-2026</p>
+</div>
+
+<!-- Statistici -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="card stat-card">
+      <div class="stat-icon"><i class="bi bi-people-fill"></i></div>
+      <div class="stat-num">10</div>
+      <div class="stat-label">Pacienti inregistrati</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card stat-card">
+      <div class="stat-icon"><i class="bi bi-calendar2-check"></i></div>
+      <div class="stat-num">35</div>
+      <div class="stat-label">Programari totale</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card stat-card">
+      <div class="stat-icon"><i class="bi bi-database-fill-check"></i></div>
+      <div class="stat-num">DW</div>
+      <div class="stat-label">Depozit de date activ</div>
+    </div>
+  </div>
+</div>
+
+<!-- Module -->
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-pencil-square"></i> Modul 1: OLTP CRUD
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">Gestioneaza pacienti si programari direct in baza de date OLTP.</p>
+        <a href="/oltp/pacienti" class="btn btn-sm btn-primary me-2">
+          <i class="bi bi-people"></i> Pacienti
+        </a>
+        <a href="/oltp/programari" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-calendar-check"></i> Programari
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-arrow-left-right"></i> Modul 2: ETL
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">Propaga modificarile din OLTP in Data Warehouse (ETL).</p>
+        <a href="/etl" class="btn btn-sm btn-primary">
+          <i class="bi bi-gear"></i> Deschide ETL
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-bar-chart-line"></i> Modul 3: Rapoarte
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">Rapoarte grafice dinamice generate din Data Warehouse.</p>
+        <a href="/rapoarte" class="btn btn-sm btn-primary">
+          <i class="bi bi-pie-chart"></i> Deschide Rapoarte
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
